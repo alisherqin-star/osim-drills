@@ -632,12 +632,14 @@
     return d === 1 || d === n - 1;
   }
 
-  // Rondo 逼抢的人的站位：在 p 和圈心之间，离 p 有一段距离；持球超过 pressDelay 后逐渐贴上去
-  function pressPoint(p, holdT) {
-    const L = state.L, dx = CX - p.x, dy = CY - p.y, d = Math.hypot(dx, dy) || 1;
+  // Rondo 逼抢的人的站位：在 p 身前，离 p 有一段距离；持球超过 pressDelay 后逐渐贴上去。
+  // off 是偏向哪一侧去逼（弧度，0 = 正对圈心）。每一脚随机偏左或偏右，封一侧、放另一侧
+  function pressPoint(p, holdT, off = 0) {
+    const L = state.L, base = Math.atan2(CY - p.y, CX - p.x) + off;
     const k = Math.max(R_P * 2, L.press - Math.max(0, holdT - L.pressDelay) * L.df * 0.8);
-    return { x: p.x + dx / d * k, y: p.y + dy / d * k };
+    return { x: p.x + Math.cos(base) * k, y: p.y + Math.sin(base) * k };
   }
+  const randPressSide = () => (Math.random() < 0.5 ? -1 : 1) * rand(0.35, 0.8);
 
   // 传球线路的安全余量：>0 表示防守来不及断
   function laneSafety(a, b, defs) {
@@ -674,6 +676,9 @@
     s.sel = null;
     to.vx = to.vy = 0;
     if (s.ring) {
+      // 逼抢的人去接球人身前时偏向哪一侧；队友喊名字时已经按这个方向挑过安全的人
+      s.nextPressOff = s.pendingPressOff != null ? s.pendingPressOff : randPressSide();
+      s.pendingPressOff = null;
       s.nextFor = call || null; s.nextBy = from;
       if (call) {
         // 队友喊的名字只用语音，不在画面上提示；关掉语音、或设备上没有对应语言的声音时才显示气泡
@@ -731,7 +736,10 @@
     if (s.defs.length && (target.isMe || Math.random() >= (s.L.err || 0))) {
       // 逼抢的人会站到接球人身前（见 pressPoint），只喊那个位置封不到的人。
       // 这样接球人马上照喊的名字传就不会被断；拖久了被贴身才有危险。
-      const predicted = s.defs.map(() => pressPoint(target, 0));
+      s.pendingPressOff = randPressSide();
+      // 不只看他最后站的位置，也看他跑过去的路上会不会横穿线路
+      const pp = pressPoint(target, 0, s.pendingPressOff);
+      const predicted = s.defs.flatMap(d => [0.35, 0.65, 1].map(k => ({ x: d.x + (pp.x - d.x) * k, y: d.y + (pp.y - d.y) * k })));
       const ok = cands.filter(m => laneSafety(target, m, predicted) > 8);
       if (ok.length) cands = ok;
     }
@@ -775,6 +783,7 @@
     s.score += pts;
     if (label) floatText(target.x, target.y - 30, label, color);
     if (from.isMe || target.isMe) sfx.ok();
+    s.pressOff = s.nextPressOff || 0;
     const q = s.queued;
     s.queued = null;
     const oneTouchNext = target.isMe && q && (s.ring ? q.a && q.b : q !== target);
@@ -941,7 +950,7 @@
         const to = b.to, near = segDist(d, b, to);
         if (near.d > 90) {
           // 断不到这一脚，就去接球人身前站好
-          const pp = pressPoint(to, 0);
+          const pp = pressPoint(to, 0, s.nextPressOff || 0);
           tx = pp.x; ty = pp.y;
         } else {
           // 追向传球路线上的前方点
@@ -951,7 +960,7 @@
         }
       } else if (s.holder) {
         // 先在持球人身前站住，持球久了再贴上去抢
-        const pp = pressPoint(s.holder, s.holdT);
+        const pp = pressPoint(s.holder, s.holdT, s.pressOff || 0);
         tx = pp.x; ty = pp.y;
         spd *= 0.9 + Math.min(s.holdT, 2) * 0.2;
       } else { tx = CX; ty = CY; }
